@@ -1,126 +1,220 @@
+"use strict";
 
-var buffer, controller, display, loop, player, render, resize, sprite_sheet;
+const CHARACTER_SPEED = 3; //  # grid walked / sec
+const MAINCURSOR_SPEED = 10;
+
+const SPRITE_SIZE = 16;
+const ANIMATION_DELAY = 40;
+
+
+// viewport aspect ratio w/h
+const aspectRatio = 1.5;
+const VIEWPORT_WIDTH_GRID_COUNT = 15;
+
+const keyinputDebugLog = true;
+const battleStateDebugLog = true;
+const battleStateDebugLogEnterNewState = true;
+const keyinputLocKDebugLog = true;
+
+
+
+var buffer, display, viewport;
 
 buffer = document.createElement("canvas").getContext("2d");
 display = document.querySelector("canvas").getContext("2d");
 
-const GRID_DIM = [10, 10];
-const GRID_SIZE = SPRITE_SIZE;
+var systemGrid = null;// = new SystemGrid([20,20], SPRITE_SIZE);
+var mainCursor = null;// new Cursor(systemGrid);
+var battleState;;
 
-var systemGrid = new SystemGrid(GRID_DIM, GRID_SIZE);
+var startMenu;
 
+
+// character list
+var heroes = [];
+var enermies = [];
+
+
+let toStartGame = false;
+
+// set a fixed display pixel range
+// width = 16x15 height=width/aspectRatio
+viewport = {w:0, h:0, startTilePos:[0,0],
+	    getMainCursorCenterdViewport(world_buffer){
+		this.w = systemGrid.size*VIEWPORT_WIDTH_GRID_COUNT;
+		this.h = this.w/aspectRatio;
+
+		this.startTilePos = [mainCursor.x - (!(this.w%(2*systemGrid.size))?
+						     this.w :
+						     (this.w - systemGrid.size))/2,
+				     mainCursor.y - (!(this.h%(2*systemGrid.size))?
+						     this.h :
+						     (this.h - systemGrid.size))/2];
+		if (this.startTilePos[0] < 0 ) this.startTilePos[0] = 0;
+		if (this.startTilePos[0] > world_buffer.canvas.width - this.w)
+		    this.startTilePos[0] = world_buffer.canvas.width - this.w;
+		if (this.startTilePos[1] < 0 ) this.startTilePos[1] = 0;
+		if (this.startTilePos[1] > world_buffer.canvas.height - this.h)
+		    this.startTilePos[1] = world_buffer.canvas.height - this.h;
+	    },
+
+	    getFullViewport(world_buffer){
+		this.startTilePos  = [0,0];
+		this.w = world_buffer.canvas.width;
+		this.h = world_buffer.canvas.height;
+	    }
+
+
+	   };
+
+
+// debug tools
+var tilePaintingType = tile_type_enum.WALKABLE;
+var targetCalculatePathPos = [-1,-1];
 
 
 function render() {
 
-    /* Draw the background. */
-    buffer.fillStyle = "darkgray";
-    buffer.fillRect(0, 0, buffer.canvas.width, buffer.canvas.height);
+    if (startMenu.isOn){
+	startMenu.drawFullDisplay();
+    }else
+	
+    {// draw scene 
+	if (!battleState) return;
+	// Draw background image
+	buffer.drawImage(map, 0, 0, map.width, map.height,
+			 0,0, buffer.canvas.width, buffer.canvas.height);
+	
+	/* Draw underlying grid */
+	//systemGrid.draw(buffer);
 
-    /* Draw underlying grid */
-    systemGrid.draw(buffer);
-    
-    /* When you draw your sprite, just use the animation frame value to determine
-       where to cut your image from the sprite sheet. It's the same technique used
-       for cutting tiles out of a tile sheet. Here I have a very easy implementation
-       set up because my sprite sheet is only a single row. */
+	// draw ui tiles	
+	battleState.drawUITiles();
 
-    /* 02/07/2018 I added Math.floor to the player's x and y positions to eliminate
-       antialiasing issues. Take out the Math.floor to see what I mean. */
-    buffer.drawImage(sprite_sheet.image, player.animation.frame * SPRITE_SIZE, 0, SPRITE_SIZE, SPRITE_SIZE, Math.floor(player.x), Math.floor(player.y), SPRITE_SIZE, SPRITE_SIZE);
+	// draw main cursor
+	mainCursor.draw(buffer);
 
-    systemGrid.drawPath(path);
+	// draw characters
+	for (let c of heroes)
+	    c.draw(null, buffer);
+	
+	for (let e of enermies) {
+	    e.draw(null, buffer);
 
-    
-    display.drawImage(buffer.canvas, 0, 0, buffer.canvas.width, buffer.canvas.height, 0, 0, display.canvas.width, display.canvas.height);
+	}
+
+	// draw top layer ui or animation
+	battleState.drawTopLayer();
+
+
+	
+	//viewport.getFullViewport(buffer);
+	viewport.getMainCursorCenterdViewport(buffer);
+	
+	display.drawImage(buffer.canvas,
+			  viewport.startTilePos[0], viewport.startTilePos[1],
+			  viewport.w, viewport.h,
+			  0, 0, display.canvas.width, display.canvas.height);
+    }
 
 };
 
-function updatePlayer(){
-    if (player.x_velocity != 0){
-	if (Math.abs(player.x - player.targetPos[0]) > 0.0005){
-	    let facing = 2; // left
-	    if (player.x_velocity > 0) facing = 1; // right
-
-	    // set animation
-	    player.animation.change(sprite_sheet.frame_sets[facing]);
-	    
-	    player.x += player.x_velocity;
-	}else{ player.x_velocity = 0;
-	       player.x = player.targetPos[0];
-	     }
-    }else{
-	// if no left or right set to front
-	player.animation.change(sprite_sheet.frame_sets[0]);
-    }
-    
-    if (player.y_velocity != 0){
-	if (Math.abs(player.y - player.targetPos[1]) > 0.0005)
-	    player.y += player.y_velocity;
-	else{ player.y_velocity = 0;
-	      player.y = player.targetPos[1];
-	    }
-    }
-}
-
-var path = [];
-
+let initBattleState = false;
 function loop(time_stamp) {
 
-    player.animation.update();
-    updatePlayer()
 
-    if (tilePaintingType == -2){
-	console.log("calculating path to "+targetCalculatePathPos);
-	path = systemGrid.findPath(0,0,targetCalculatePathPos[0], targetCalculatePathPos[1]);
-	tilePaintingType = -1;
-    }
-
-    
     render();
+
+    // update
+    if (startMenu.isOn){
+	if (toStartGame){
+	    if (!startMenu.globalImgLoaded)
+		loadScene();
+	    else{
+		clearScene();
+		reloadScene();
+	    }
+	    startMenu.isOn = false;
+	    console.log("start");
+	}
+	    
+    }else
+    {
+	if((!imageLoadCount) && (!initBattleState)){
+	    
+	    loadHeroes();
+	    loadEnermies();
+
+	    battleState = new BattleState(heroes, enermies);
+	    loadIntro();
+	    loadTutorial();
+	    initBattleState = true;
+	}
+	if (initBattleState)
+	    battleState.update();
+	
+    }
+    
 
     window.requestAnimationFrame(loop);
 
 };
 
+
+function initInputEvents(){
+    
+    window.addEventListener("keydown", function(event){
+	if (event.defaultPrevented) {
+	    return; // Do nothing if the event was already processed
+	}
+
+	if (!isKeyboardInputReady()) return;
+
+	if (!startMenu.isOn){
+	    let inBattleState = battleState.inputEvents(event.key);
+	    if (!inBattleState)
+		sceneInputEvenets();
+	}else startMenuInputEvents();
+
+    });
+
+    window.addEventListener("click", function(event){
+	let coords = getCursorPosition(event);
+	
+	console.log("clicked on psotion : " + coords);
+
+	if (!startMenu.isOn){
+	    let coords_ij = [Math.floor(coords[0]/ systemGrid.size),
+			     Math.floor(coords[1]/ systemGrid.size)];
+	
+	    console.log("clicked on grid : " + coords_ij,
+		       systemGrid.nodes[coords_ij[0]][coords_ij[1]].type);
+	
+	    if (tilePaintingType == -1){
+		//calculate path
+		targetCalculatePathPos = coords_ij;
+		tilePaintingType = -2;
+		console.log("set target pos "+coords_ij);
+	    }else{ // paint
+		systemGrid.setGridType(coords_ij[0], coords_ij[1], tilePaintingType);
+	    }
+	}
+    });
+}
+
 function resize() {
 
-    display.canvas.width = document.documentElement.clientWidth - 32;
-    if (display.canvas.width > document.documentElement.clientHeight - 32) {
-	display.canvas.width = document.documentElement.clientHeight - 32;
+    display.canvas.width = document.documentElement.clientWidth * 0.8;
+    if (display.canvas.width > document.documentElement.clientHeight * 0.8) {
+	display.canvas.width = document.documentElement.clientHeight * 0.8;
     }
 
-    display.canvas.height = display.canvas.width;
+    // same aspect ratio as viewport
+    display.canvas.height = display.canvas.width/aspectRatio;
 
     display.imageSmoothingEnabled = false;
 
 };
-
-
-
-/* The sprite sheet object holds the sprite sheet graphic and some animation frame
-   sets. An animation frame set is just an array of frame values that correspond to
-   each sprite image in the sprite sheet, just like a tile sheet and a tile map. */
-sprite_sheet = {
-
-    frame_sets:[[0, 1], [2, 3], [4, 5]],// standing still, walk right, walk left
-    image:new Image()
-
-};
-
-
-// player
-player = {
-
-    animation:new Animation(sprite_sheet.frame_sets[0], 40),
-    height:SPRITE_SIZE,    width:SPRITE_SIZE,
-    x:0,          y:0,
-    x_velocity:0, y_velocity:0,
-    targetPos:[0,0]
-};
-
-
-
 
 
 
@@ -130,26 +224,130 @@ player = {
 //// INITIALIZE ////
 ////////////////////
 
+let imageLoadTotal = 6;
+let imageLoadCount = imageLoadTotal;
+
+let frame_sets =[[0, 1], [2, 3], [4, 5], [6, 7], [8, 9], [10, 11]];
+
+let map = new Image();
+let portrait = new Image();
+let hero_walking_sprite = new Image();
+let enermy_walking_sprite = new Image();
+let hero_battle_sprite = new Image();
+let enermy_battle_sprite = new Image();
+ 
+
+function onloadHandler(){
+    imageLoadCount--;
+    if (!imageLoadCount){
+	window.requestAnimationFrame(loop);// Start the game loop.
+    }
+    console.log("image load", 1-(imageLoadCount / imageLoadTotal));
+}
+
+function mapOnLoadHandler(){
+    imageLoadCount--;
+    buffer.canvas.width = map.width;
+    buffer.canvas.height = map.height;
+
+    systemGrid = new SystemGrid([Math.round(map.width / SPRITE_SIZE),
+				 Math.round(map.height / SPRITE_SIZE)],
+				SPRITE_SIZE);
+    loadGridTypes();
+    mainCursor = new Cursor(systemGrid);
+    
+    if (!imageLoadCount){
+	window.requestAnimationFrame(loop);// Start the game loop.
+    }
+
+    console.log("image load", 1-(imageLoadCount / imageLoadTotal));
+}
+
+
 function init() {
-    buffer.canvas.width = 160;
-    buffer.canvas.height = 160;
+    buffer.canvas.width = 16*20;
+    buffer.canvas.height = 16*20;//buffer.canvas.width/aspectRatio;
 
     window.addEventListener("resize", resize);
 
-    initInputEvents(player, systemGrid);
+    initInputEvents(systemGrid);
     //window.addEventListener("keyup", controller.keyUpDown);
 
     resize();
 
-    sprite_sheet.image.addEventListener("load", function(event) {// When the load event fires, do this:
-	window.requestAnimationFrame(loop);// Start the game loop.
-    });
-    sprite_sheet.image.src = "animation.png";// Start loading the image.
-   
+    startMenu = new Menu(0, 0, buffer.canvas.width, buffer.canvas.height);
+
+    //sprite_sheet.image.onload = onloadHandler
+    map.onload = mapOnLoadHandler;
+    portrait.onload = onloadHandler;
+    hero_walking_sprite.onload = onloadHandler;
+    enermy_walking_sprite.onload = onloadHandler;
+    hero_battle_sprite.onload = onloadHandler;
+    enermy_battle_sprite.onload = onloadHandler;
 }
 
+
+function loadScene(){
+    //sprite_sheet.image.src = "pixelframe.png";// Start loading the image.
+    map.src = "img/map.png";
+    portrait.src = "img/hero_portrait.png";
+    hero_walking_sprite.src = "img/hero_walk.png";
+    enermy_walking_sprite.src = "img/enermy_walk.png";
+    hero_battle_sprite.src = "img/hero_battle.png";
+    enermy_battle_sprite.src = "img/enermy_battle.png";
+    
+    //battleState.currentState = 10;
+    startMenu.globalImgLoaded = true;
+    
+    //heroes[0].path = systemGrid.findPath(0,0, 5, 5);
+    //systemGrid.drawPath(heroes[0].path);
+}
+
+function clearScene(){
+    heroes.splice(0, heroes.length);
+    enermies.splice(0, enermies.length);
+    battleState = null;
+}
+
+function reloadScene(){
+    loadHeroes();
+    loadEnermies();
+    loadGridTypes();
+
+    battleState = new BattleState(heroes, enermies);
+    loadIntro();
+}
+
+
+
 init();
-path = systemGrid.findPath(0,0, 5, 5);
-systemGrid.drawPath(path);
+//loadScene();
+
 window.requestAnimationFrame(loop);// Start the game loop.
 
+
+
+
+// mis helper function
+
+
+function removeFromList(list, c){
+    for (let i=0; i<list.length; i++){
+	if (c == list[i]){
+	    list.splice(i,1);
+	    return i;
+	    break;
+	}	
+    }
+    console.error("unable to remove from list", list, " ", c);
+		
+    return -1;
+}
+
+
+function getCharacterByName(list, name){
+    for (let c of list){
+	if (c.name == name) return c;
+    }
+    return null
+}
